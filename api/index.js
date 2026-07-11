@@ -7,32 +7,36 @@ const fs      = require('fs');
 const path    = require('path');
 
 const app = express();
-
-// Cache live match data for 60 seconds
 const cache = new NodeCache({ stdTTL: 60 });
 
 app.use(cors());
 
-// ── PLAYER DATA ─────────────────────────────────────────────────────────────
-// Loaded from data/players.json at startup; rebuilt weekly by the cron job.
+// ── DATA STORE ─────────────────────────────────────────────────────────────
 let _players = [];
-let _playersLoadedAt = 0;
+let _teams = [];
+let _tournaments = [];
+let _dataLoadedAt = 0;
 
-function loadPlayers() {
+function loadData() {
     try {
-        const filePath = path.join(__dirname, '..', 'data', 'players.json');
-        if (fs.existsSync(filePath)) {
-            _players = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-            _playersLoadedAt = Date.now();
-            console.log(`Loaded ${_players.length} players from players.json`);
+        const dataDir = path.join(__dirname, '..', 'data');
+        if (fs.existsSync(path.join(dataDir, 'players.json'))) {
+            _players = JSON.parse(fs.readFileSync(path.join(dataDir, 'players.json'), 'utf8'));
         }
+        if (fs.existsSync(path.join(dataDir, 'teams.json'))) {
+            _teams = JSON.parse(fs.readFileSync(path.join(dataDir, 'teams.json'), 'utf8'));
+        }
+        if (fs.existsSync(path.join(dataDir, 'tournaments.json'))) {
+            _tournaments = JSON.parse(fs.readFileSync(path.join(dataDir, 'tournaments.json'), 'utf8'));
+        }
+        _dataLoadedAt = Date.now();
+        console.log(`Loaded ${_players.length} players, ${_teams.length} teams, ${_tournaments.length} tournaments.`);
     } catch (e) {
-        console.warn('Could not load players.json:', e.message);
-        _players = [];
+        console.warn('Could not load data:', e.message);
     }
 }
 
-loadPlayers();
+loadData();
 
 // ── MATCH NORMALIZER ─────────────────────────────────────────────────────────
 function normalizeScrapedMatch(raw) {
@@ -58,23 +62,23 @@ function normalizeScrapedMatch(raw) {
 }
 
 // ── CRICBUZZ SCRAPER ─────────────────────────────────────────────────────────
-async function scrapeCricbuzzLive() {
+async function scrapeCricbuzzMatches(url) {
     try {
-        const { data } = await axios.get('https://www.cricbuzz.com/cricket-match/live-scores', {
+        const { data } = await axios.get(url, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
         });
         const $ = cheerio.load(data);
         const matches = [];
 
         $('a.w-full.bg-cbWhite.flex.flex-col.p-3.gap-1').each((i, el) => {
-            const url = $(el).attr('href');
-            if (!url) return;
+            const mUrl = $(el).attr('href');
+            if (!mUrl) return;
             const headerDiv = $(el).children('div').eq(0);
             const title = headerDiv.find('span').first().text().trim();
             const stateSpan = $(el).children('span').last();
             const state = stateSpan.text().trim();
-            const isLive = stateSpan.hasClass('text-cbLive') || url.includes('live-cricket-scores');
-            const isCompleted = stateSpan.hasClass('text-cbSuccess') || (url.includes('live-cricket-scores') && (state.includes('won by') || state.includes('Stumps')));
+            const isLive = stateSpan.hasClass('text-cbLive') || mUrl.includes('live-cricket-scores');
+            const isCompleted = stateSpan.hasClass('text-cbSuccess') || (mUrl.includes('live-cricket-scores') && (state.includes('won by') || state.includes('Stumps')));
             const teamsDiv = $(el).children('div').eq(1);
             const teamRows = teamsDiv.children('div');
             let team1 = '', score1 = '', overs1 = '', team2 = '', score2 = '', overs2 = '';
@@ -91,7 +95,7 @@ async function scrapeCricbuzzLive() {
                 if (m2) { score2 = m2[1]; overs2 = m2[2] || ''; }
             }
             if (!team1 || !team2) return;
-            matches.push(normalizeScrapedMatch({ title, team1, team2, score1, score2, overs1, overs2, status: state, isLive, isCompleted, url }));
+            matches.push(normalizeScrapedMatch({ title, team1, team2, score1, score2, overs1, overs2, status: state, isLive, isCompleted, url: mUrl }));
         });
         return matches;
     } catch (e) {
@@ -106,7 +110,7 @@ async function scrapeCricbuzzLive() {
 app.get('/api/currentMatches', async (req, res) => {
     let matches = cache.get('liveMatches');
     if (!matches) {
-        matches = await scrapeCricbuzzLive();
+        matches = await scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores');
         if (matches.length > 0) cache.set('liveMatches', matches);
     }
     res.json({ status: 'success', data: matches });
@@ -117,21 +121,15 @@ app.get('/api/match_scorecard', async (req, res) => {
     res.json({ status: 'success', data: { id: req.query.id, scorecard: [] } });
 });
 
-// ── PLAYER SEARCH ────────────────────────────────────────────────────────────
-// Fuzzy search across 32k+ players. No external calls — instant.
+// ── SEARCH ENDPOINTS ─────────────────────────────────────────────────────────
+
 app.get('/api/searchPlayers', (req, res) => {
     const q      = (req.query.q || '').trim().toLowerCase();
-    const gender = (req.query.gender || 'all').toLowerCase();
     const limit  = Math.min(parseInt(req.query.limit) || 20, 50);
+    if (!q || q.length < 2) return res.json({ status: 'success', data: [] });
 
-    if (!q || q.length < 2) {
-        return res.json({ status: 'success', data: [] });
-    }
-
-    // Three-tier relevance scoring
     const scored = [];
     for (const p of _players) {
-        if (gender !== 'all' && p.gender && p.gender !== gender) continue;
         const nameLow = p.name.toLowerCase();
         const hay = `${nameLow} ${(p.country || '').toLowerCase()} ${(p.role || '').toLowerCase()}`;
         if (!hay.includes(q)) continue;
@@ -140,55 +138,113 @@ app.get('/api/searchPlayers', (req, res) => {
         else if (nameLow.includes(` ${q}`) || nameLow.includes(`-${q}`)) score = 2;
         scored.push({ score, player: p });
     }
-
     scored.sort((a, b) => b.score - a.score || a.player.name.localeCompare(b.player.name));
-    const results = scored.slice(0, limit).map(x => x.player);
-
-    res.json({ status: 'success', data: results, total: scored.length, loadedAt: _playersLoadedAt });
+    res.json({ status: 'success', data: scored.slice(0, limit).map(x => x.player), total: scored.length });
 });
 
-// ── CRON: REFRESH PLAYER DATA ────────────────────────────────────────────────
-// Called by Vercel cron every Sunday at midnight UTC.
-// Rebuilds players.json from Wikidata + Cricsheet and commits to GitHub,
-// which triggers a Vercel auto-redeploy with fresh player data.
-app.get('/api/refresh-players', async (req, res) => {
+app.get('/api/searchTeams', (req, res) => {
+    const q = (req.query.q || '').trim().toLowerCase();
+    const limit = Math.min(parseInt(req.query.limit) || 20, 10000); // 9999 allows fetching all
+    if (!q) return res.json({ status: 'success', data: [] });
+
+    const results = q === '.' ? _teams : _teams.filter(t => 
+        t.name.toLowerCase().includes(q) || (t.country||'').toLowerCase().includes(q)
+    );
+    res.json({ status: 'success', data: results.slice(0, limit) });
+});
+
+app.get('/api/searchTournaments', (req, res) => {
+    const q = (req.query.q || '').trim().toLowerCase();
+    const limit = Math.min(parseInt(req.query.limit) || 20, 10000);
+    if (!q) return res.json({ status: 'success', data: [] });
+
+    const results = q === '.' ? _tournaments : _tournaments.filter(t => 
+        t.name.toLowerCase().includes(q) || (t.country||'').toLowerCase().includes(q)
+    );
+    res.json({ status: 'success', data: results.slice(0, limit) });
+});
+
+app.get('/api/searchMatches', async (req, res) => {
+    const t1 = (req.query.team1 || '').toLowerCase();
+    const t2 = (req.query.team2 || '').toLowerCase();
+    
+    // We scrape live, recent, and upcoming matches since full historical search isn't available
+    let allMatches = cache.get('allMatches');
+    if (!allMatches) {
+        const [live, recent, upcoming] = await Promise.all([
+            scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores'),
+            scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores/recent-matches'),
+            scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores/upcoming-matches')
+        ]);
+        allMatches = [...live, ...recent, ...upcoming];
+        // deduplicate by id
+        const seen = new Set();
+        allMatches = allMatches.filter(m => {
+            if (seen.has(m.id)) return false;
+            seen.add(m.id);
+            return true;
+        });
+        if (allMatches.length > 0) cache.set('allMatches', allMatches, 120); // cache for 2 mins
+    }
+
+    const results = allMatches.filter(m => {
+        const mt1 = (m.team1.name || '').toLowerCase();
+        const mt2 = (m.team2.name || '').toLowerCase();
+        if (t1 && !mt1.includes(t1) && !mt2.includes(t1)) return false;
+        if (t2 && !mt1.includes(t2) && !mt2.includes(t2)) return false;
+        return true;
+    });
+
+    res.json({ status: 'success', data: results });
+});
+
+
+// ── CRON: REFRESH ALL DATA ────────────────────────────────────────────────
+app.get('/api/refresh-data', async (req, res) => {
     const secret = req.headers['x-cron-secret'] || req.query.secret;
     if (secret !== (process.env.CRON_SECRET || 'bails-cron-2024')) {
         return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    console.log('Cron: Starting player data refresh...');
+    console.log('Cron: Starting data refresh...');
     try {
-        const { build } = require('../scripts/build-players');
-        const count = await build();
+        const { build: buildPlayers } = require('../scripts/build-players');
+        const { build: buildTeamsTournaments } = require('../scripts/build-teams-tournaments');
+        
+        await buildPlayers();
+        await buildTeamsTournaments();
 
-        // Commit the updated players.json to GitHub so Vercel redeploys
         const token = process.env.GITHUB_TOKEN;
         if (token) {
-            const filePath = path.join(__dirname, '..', 'data', 'players.json');
-            const b64 = fs.readFileSync(filePath).toString('base64');
-            const ghHeaders = { Authorization: `token ${token}`, 'User-Agent': 'BailsApp' };
+            const ghHeaders = { Authorization: \`token \${token}\`, 'User-Agent': 'BailsApp' };
+            
+            const files = ['players.json', 'teams.json', 'tournaments.json'];
+            for (const file of files) {
+                const filePath = path.join(__dirname, '..', 'data', file);
+                if (!fs.existsSync(filePath)) continue;
+                
+                const b64 = fs.readFileSync(filePath).toString('base64');
+                const infoRes = await axios.get(
+                    \`https://api.github.com/repos/mark816p/bails-cricket-api/contents/data/\${file}\`,
+                    { headers: ghHeaders }
+                ).catch(() => null);
+                const sha = infoRes?.data?.sha;
 
-            const infoRes = await axios.get(
-                'https://api.github.com/repos/mark816p/bails-cricket-api/contents/data/players.json',
-                { headers: ghHeaders }
-            ).catch(() => null);
-            const sha = infoRes?.data?.sha;
-
-            await axios.put(
-                'https://api.github.com/repos/mark816p/bails-cricket-api/contents/data/players.json',
-                {
-                    message: `chore: refresh player data (${new Date().toISOString().slice(0,10)})`,
-                    content: b64,
-                    ...(sha ? { sha } : {})
-                },
-                { headers: ghHeaders }
-            );
-            console.log('Cron: Committed players.json to GitHub.');
+                await axios.put(
+                    \`https://api.github.com/repos/mark816p/bails-cricket-api/contents/data/\${file}\`,
+                    {
+                        message: \`chore: refresh \${file} (\${new Date().toISOString().slice(0,10)})\`,
+                        content: b64,
+                        ...(sha ? { sha } : {})
+                    },
+                    { headers: ghHeaders }
+                );
+            }
+            console.log('Cron: Committed data updates to GitHub.');
         }
 
-        loadPlayers(); // hot-reload in current instance
-        res.json({ status: 'success', players: count, refreshedAt: new Date().toISOString() });
+        loadData(); 
+        res.json({ status: 'success', refreshedAt: new Date().toISOString() });
     } catch (e) {
         console.error('Cron refresh failed:', e.message);
         res.status(500).json({ status: 'error', message: e.message });
