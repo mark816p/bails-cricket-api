@@ -2,5 +2,11 @@
   "version": 2,
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" }
+  ],
+  "crons": [
+    {
+      "path": "/api/refresh-players?secret=bails-cron-2024",
+      "schedule": "0 0 * * 0"
+    }
   ]
 }
