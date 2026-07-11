@@ -50,29 +50,33 @@ async function scrapeCricbuzzLive() {
         const $ = cheerio.load(data);
         const matches = [];
 
-        $('.cb-mtch-lst.cb-col.cb-col-100.cb-tms-itm').each((i, el) => {
-            const titleElement = $(el).find('h3.cb-lv-scr-mtch-hdr a');
-            if (!titleElement.length) return;
+        $('a.w-full.bg-cbWhite.flex.flex-col.p-3.gap-1').each((i, el) => {
+            const url = $(el).attr('href');
+            if (!url) return;
             
-            const title = titleElement.text().trim();
-            const url = titleElement.attr('href');
+            // Extract title / subtitle
+            const headerDiv = $(el).children('div').eq(0);
+            const title = headerDiv.find('span').first().text().trim();
             
-            const state = $(el).find('.cb-text-live, .cb-text-complete, .cb-text-preview').text().trim();
-            const isLive = $(el).find('.cb-text-live').length > 0;
-            const isCompleted = $(el).find('.cb-text-complete').length > 0;
+            // Extract state message (bottom span)
+            const stateSpan = $(el).children('span').last();
+            const state = stateSpan.text().trim();
             
-            // Score parsing
-            const teamsDiv = $(el).find('.cb-scr-wll-chvrn.cb-lv-scrs-col');
-            const teamRows = teamsDiv.find('.cb-hmscg-bat-txt, .cb-hmscg-bwl-txt');
-            
+            const isLive = stateSpan.hasClass('text-cbLive') || url.includes('live-cricket-scores');
+            const isCompleted = stateSpan.hasClass('text-cbSuccess') || url.includes('live-cricket-scores') && (state.includes('won by') || state.includes('Stumps'));
+
+            // Team block
+            const teamsDiv = $(el).children('div').eq(1);
+            const teamRows = teamsDiv.children('div');
+
             let team1 = '', score1 = '', overs1 = '';
             let team2 = '', score2 = '', overs2 = '';
 
             if (teamRows.length >= 1) {
                 const row1 = $(teamRows[0]);
-                team1 = row1.find('.cb-hmscg-tm-nm').text().trim();
-                const fullScore1 = row1.find('div:nth-child(2)').text().trim();
-                const match1 = fullScore1.match(/([\d\/]+)(?:\s+\(([\d\.]+)\s*Ovs\))?/);
+                team1 = row1.find('span.hidden.wb\\:block').text().trim() || row1.find('span.block.wb\\:hidden').text().trim();
+                const fullScore1 = row1.children('span.font-medium').text().trim();
+                const match1 = fullScore1.match(/([\d\/\-]+)(?:\s*\(([\d\.]+)\))?/);
                 if (match1) {
                     score1 = match1[1];
                     overs1 = match1[2] || '';
@@ -81,14 +85,17 @@ async function scrapeCricbuzzLive() {
 
             if (teamRows.length >= 2) {
                 const row2 = $(teamRows[1]);
-                team2 = row2.find('.cb-hmscg-tm-nm').text().trim();
-                const fullScore2 = row2.find('div:nth-child(2)').text().trim();
-                const match2 = fullScore2.match(/([\d\/]+)(?:\s+\(([\d\.]+)\s*Ovs\))?/);
+                team2 = row2.find('span.hidden.wb\\:block').text().trim() || row2.find('span.block.wb\\:hidden').text().trim();
+                const fullScore2 = row2.children('span.font-medium').text().trim();
+                const match2 = fullScore2.match(/([\d\/\-]+)(?:\s*\(([\d\.]+)\))?/);
                 if (match2) {
                     score2 = match2[1];
                     overs2 = match2[2] || '';
                 }
             }
+
+            // Skip invalid ones (sometimes they are ad slots or empty)
+            if (!team1 || !team2) return;
 
             matches.push(normalizeScrapedMatch({
                 title, team1, team2, score1, score2, overs1, overs2, status: state, isLive, isCompleted, url
