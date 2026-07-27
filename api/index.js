@@ -45,7 +45,7 @@ function normalizeScrapedMatch(raw) {
     const hay = `${raw.title} ${t1} ${t2}`.toLowerCase();
     const gender = /\bwomen'?s?\b/.test(hay) ? 'women' : 'men';
     return {
-        id: Buffer.from(`${t1}-${t2}-${raw.title}`).toString('base64'),
+        id: Buffer.from(`${t1}-${t2}-${raw.title}`).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, ''),
         name: `${t1} vs ${t2}`,
         matchType: (raw.type || 'MATCH').toUpperCase(),
         statusText: raw.status || (raw.isLive ? 'Live' : 'Upcoming'),
@@ -62,41 +62,153 @@ function normalizeScrapedMatch(raw) {
 }
 
 // ── CRICBUZZ SCRAPER ─────────────────────────────────────────────────────────
+// Cricbuzz uses Tailwind CSS utility classes that change frequently.
+// This scraper uses multiple fallback strategies to extract match data.
+function _extractTeamName($, row) {
+    // Try several selectors in order of specificity
+    const selectors = [
+        'span.hidden.wb\\:block',
+        'span.wb\\:block',
+        '[class*="hidden"][class*="wb"]',
+        'span[class*="block"]',
+        'span[class*="team"]',
+        'span[class*="name"]',
+    ];
+    for (const sel of selectors) {
+        try {
+            const text = row.find(sel).first().text().trim();
+            if (text && text.length > 1 && !text.match(/^[\d\/\-\.]+$/)) return text;
+        } catch (_) {}
+    }
+    // Last resort: find any non-numeric, non-empty span text
+    let found = '';
+    row.find('span').each((_, s) => {
+        if (found) return;
+        const t = $(s).text().trim();
+        if (t && t.length > 1 && !t.match(/^[\d\/\-\.\(\)\s]+$/) && !t.includes(':')) found = t;
+    });
+    return found;
+}
+
+function _extractScore($, row) {
+    // Try to find score pattern like "123/4" or "123/4 (12.3)"
+    const scoreSelectors = [
+        'span.font-medium',
+        'span[class*="score"]',
+        'span[class*="runs"]',
+        'span.font-bold',
+    ];
+    for (const sel of scoreSelectors) {
+        try {
+            const text = row.find(sel).text().trim();
+            const m = text.match(/([\d]+\/[\d]+|[\d]+\-[\d]+)(?:\s*\(([\d\.]+)\))?/);
+            if (m) return { score: m[1], overs: m[2] || '' };
+        } catch (_) {}
+    }
+    // Scan all spans for score pattern
+    let result = { score: '', overs: '' };
+    row.find('span').each((_, s) => {
+        if (result.score) return;
+        const t = $(s).text().trim();
+        const m = t.match(/^([\d]+\/[\d]+)(?:\s*\(([\d\.]+)\))?$/);
+        if (m) { result = { score: m[1], overs: m[2] || '' }; }
+    });
+    return result;
+}
+
 async function scrapeCricbuzzMatches(url) {
     try {
         const { data } = await axios.get(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Cache-Control': 'no-cache'
+            },
+            timeout: 15000
         });
         const $ = cheerio.load(data);
         const matches = [];
 
-        $('a.w-full.bg-cbWhite.flex.flex-col.p-3.gap-1').each((i, el) => {
-            const mUrl = $(el).attr('href');
-            if (!mUrl) return;
-            const headerDiv = $(el).children('div').eq(0);
-            const title = headerDiv.find('span').first().text().trim();
-            const stateSpan = $(el).children('span').last();
-            const state = stateSpan.text().trim();
-            const isLive = stateSpan.hasClass('text-cbLive') || mUrl.includes('live-cricket-scores');
-            const isCompleted = stateSpan.hasClass('text-cbSuccess') || (mUrl.includes('live-cricket-scores') && (state.includes('won by') || state.includes('Stumps')));
-            const teamsDiv = $(el).children('div').eq(1);
-            const teamRows = teamsDiv.children('div');
-            let team1 = '', score1 = '', overs1 = '', team2 = '', score2 = '', overs2 = '';
-            if (teamRows.length >= 1) {
-                const r1 = $(teamRows[0]);
-                team1 = r1.find('span.hidden.wb\\:block').text().trim() || r1.find('span.block.wb\\:hidden').text().trim();
-                const m1 = r1.children('span.font-medium').text().trim().match(/([\d\/\-]+)(?:\s*\(([\d\.]+)\))?/);
-                if (m1) { score1 = m1[1]; overs1 = m1[2] || ''; }
-            }
-            if (teamRows.length >= 2) {
-                const r2 = $(teamRows[1]);
-                team2 = r2.find('span.hidden.wb\\:block').text().trim() || r2.find('span.block.wb\\:hidden').text().trim();
-                const m2 = r2.children('span.font-medium').text().trim().match(/([\d\/\-]+)(?:\s*\(([\d\.]+)\))?/);
-                if (m2) { score2 = m2[1]; overs2 = m2[2] || ''; }
-            }
-            if (!team1 || !team2) return;
-            matches.push(normalizeScrapedMatch({ title, team1, team2, score1, score2, overs1, overs2, status: state, isLive, isCompleted, url: mUrl }));
-        });
+        // Strategy 1: Modern Cricbuzz layout (anchor cards)
+        const cardSelectors = [
+            'a.w-full.bg-cbWhite.flex',
+            'a[href*="live-cricket-scores"]',
+            'a[href*="cricket-scores"]',
+            'div.cb-mtch-lst a',
+            '.cb-col.cb-col-100 a[href*="scorecard"]',
+            'div[class*="match"] a',
+        ];
+
+        let foundCards = false;
+        for (const cardSel of cardSelectors) {
+            const cards = $(cardSel);
+            if (cards.length === 0) continue;
+            
+            cards.each((i, el) => {
+                const mUrl = $(el).attr('href');
+                if (!mUrl || (!mUrl.includes('scores') && !mUrl.includes('scorecard'))) return;
+
+                // Extract title/series
+                const title = $(el).find('[class*="series"], [class*="title"], [class*="header"] span').first().text().trim() ||
+                              $(el).children('div').first().find('span').first().text().trim() ||
+                              $(el).attr('title') || '';
+
+                // State/status
+                const stateEl = $(el).find('[class*="live"], [class*="status"], [class*="result"]').last();
+                const state = stateEl.text().trim() || $(el).children('span').last().text().trim();
+                const isLive = stateEl.hasClass('text-cbLive') || mUrl.includes('live-cricket-scores') || state.toLowerCase().includes('live');
+                const isCompleted = stateEl.hasClass('text-cbSuccess') ||
+                    (state.includes('won by') || state.includes('Stumps') || state.includes('rain') ||
+                     state.toLowerCase().includes('abandoned'));
+
+                // Find team rows — look for the container with two team rows
+                let teamRows = $(el).find('div').filter((_, d) => {
+                    const kids = $(d).children('div');
+                    return kids.length >= 2;
+                }).first().children('div');
+
+                if (!teamRows || teamRows.length < 2) {
+                    teamRows = $(el).children('div').eq(1).children('div');
+                }
+
+                let team1 = '', score1 = '', overs1 = '', team2 = '', score2 = '', overs2 = '';
+
+                if (teamRows && teamRows.length >= 1) {
+                    const r1 = $(teamRows[0]);
+                    team1 = _extractTeamName($, r1);
+                    const s1 = _extractScore($, r1);
+                    score1 = s1.score; overs1 = s1.overs;
+                }
+                if (teamRows && teamRows.length >= 2) {
+                    const r2 = $(teamRows[1]);
+                    team2 = _extractTeamName($, r2);
+                    const s2 = _extractScore($, r2);
+                    score2 = s2.score; overs2 = s2.overs;
+                }
+
+                // Validate: both team names must be non-empty strings
+                if (!team1 || !team2 || team1 === team2) return;
+                // Ensure they are strings (never objects)
+                team1 = String(team1).trim();
+                team2 = String(team2).trim();
+                score1 = String(score1 || '').trim();
+                score2 = String(score2 || '').trim();
+                overs1 = String(overs1 || '').trim();
+                overs2 = String(overs2 || '').trim();
+
+                matches.push(normalizeScrapedMatch({ title, team1, team2, score1, score2, overs1, overs2, status: state, isLive, isCompleted, url: mUrl }));
+            });
+            
+            if (matches.length > 0) { foundCards = true; break; }
+        }
+
+        if (!foundCards) {
+            console.warn('Cricbuzz: no match cards found with any known selector at', url);
+        }
+        
         return matches;
     } catch (e) {
         console.error('Scraping error:', e.message);
@@ -106,11 +218,22 @@ async function scrapeCricbuzzMatches(url) {
 
 // ── ROUTES ───────────────────────────────────────────────────────────────────
 
-// Live cricket matches
+// Live, recent, and upcoming matches
 app.get('/api/currentMatches', async (req, res) => {
     let matches = cache.get('liveMatches');
     if (!matches) {
-        matches = await scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores');
+        const [live, recent, upcoming] = await Promise.all([
+            scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores'),
+            scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores/recent-matches'),
+            scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores/upcoming-matches')
+        ]);
+        matches = [...live, ...recent, ...upcoming];
+        const seen = new Set();
+        matches = matches.filter(m => {
+            if (seen.has(m.id)) return false;
+            seen.add(m.id);
+            return true;
+        });
         if (matches.length > 0) cache.set('liveMatches', matches);
     }
     res.json({ status: 'success', data: matches });
@@ -216,7 +339,7 @@ app.get('/api/refresh-data', async (req, res) => {
 
         const token = process.env.GITHUB_TOKEN;
         if (token) {
-            const ghHeaders = { Authorization: \`token \${token}\`, 'User-Agent': 'BailsApp' };
+            const ghHeaders = { Authorization: `token ${token}`, 'User-Agent': 'BailsApp' };
             
             const files = ['players.json', 'teams.json', 'tournaments.json'];
             for (const file of files) {
@@ -225,15 +348,15 @@ app.get('/api/refresh-data', async (req, res) => {
                 
                 const b64 = fs.readFileSync(filePath).toString('base64');
                 const infoRes = await axios.get(
-                    \`https://api.github.com/repos/mark816p/bails-cricket-api/contents/data/\${file}\`,
+                    `https://api.github.com/repos/mark816p/bails-cricket-api/contents/data/${file}`,
                     { headers: ghHeaders }
                 ).catch(() => null);
                 const sha = infoRes?.data?.sha;
 
                 await axios.put(
-                    \`https://api.github.com/repos/mark816p/bails-cricket-api/contents/data/\${file}\`,
+                    `https://api.github.com/repos/mark816p/bails-cricket-api/contents/data/${file}`,
                     {
-                        message: \`chore: refresh \${file} (\${new Date().toISOString().slice(0,10)})\`,
+                        message: `chore: refresh ${file} (${new Date().toISOString().slice(0,10)})`,
                         content: b64,
                         ...(sha ? { sha } : {})
                     },
