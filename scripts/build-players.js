@@ -22,7 +22,7 @@ const WIKIDATA_URL = 'https://query.wikidata.org/sparql';
 const SPARQL = (genderQid) => `
 SELECT DISTINCT ?name ?countryLabel ?roleLabel ?batStyleLabel ?bowlStyleLabel ?genderLabel WHERE {
   ?player wdt:P31 wd:Q5;
-          wdt:P106 wd:Q11513337;
+          wdt:P106 wd:Q12299841;
           wdt:P21  wd:${genderQid};
           rdfs:label ?name.
   FILTER(LANG(?name) = "en")
@@ -42,7 +42,7 @@ async function fetchWikidata(genderQid, gender) {
     try {
         const res = await axios.get(WIKIDATA_URL, {
             params: { query: SPARQL(genderQid), format: 'json' },
-            headers: { 'Accept': 'application/sparql-results+json', 'User-Agent': 'BailsCricketApp/1.0' },
+            headers: { 'Accept': 'application/sparql-results+json', 'User-Agent': 'BailsCricketApp/2.0 (https://github.com/mark816p/bails-cricket-api; contact@bails.app) axios/1.18.1' },
             timeout: 30000
         });
         const bindings = res.data.results.bindings;
@@ -126,14 +126,20 @@ async function build() {
     console.log('Building players.json…');
     fs.mkdirSync(path.dirname(OUT_PATH), { recursive: true });
 
+    let curated = [];
+    try {
+        const curatedPath = path.join(__dirname, '..', 'data', 'curated_stars.json');
+        if (fs.existsSync(curatedPath)) curated = JSON.parse(fs.readFileSync(curatedPath, 'utf8'));
+    } catch(e) {}
+
     const [menWiki, womenWiki, cricsheet] = await Promise.all([
         fetchWikidata('Q6581097', 'men'),
         fetchWikidata('Q6581072', 'women'),
         fetchCricsheet()
     ]);
 
-    // Priority: Wikidata (has country+role) over Cricsheet (name only)
-    const merged = dedup([...menWiki, ...womenWiki, ...cricsheet]);
+    // Priority: Curated (priority:100) over Wikidata over Cricsheet
+    const merged = dedup([...curated, ...menWiki, ...womenWiki, ...cricsheet]);
 
     // Sort alphabetically
     merged.sort((a, b) => a.name.localeCompare(b.name));

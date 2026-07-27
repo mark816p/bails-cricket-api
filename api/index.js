@@ -253,14 +253,28 @@ app.get('/api/searchPlayers', (req, res) => {
     const limit  = Math.min(parseInt(req.query.limit) || 20, 50);
     if (!q || q.length < 2) return res.json({ status: 'success', data: [] });
 
+    const qWords = q.split(/\s+/).filter(Boolean);
     const scored = [];
     for (const p of _players) {
         const nameLow = p.name.toLowerCase();
         const hay = `${nameLow} ${(p.country || '').toLowerCase()} ${(p.role || '').toLowerCase()}`;
-        if (!hay.includes(q)) continue;
+        
+        let matches = hay.includes(q);
+        if (!matches && qWords.length === 1 && p.priority) {
+            const nameWords = nameLow.split(/\s+/);
+            if (nameWords.some(w => w.startsWith(q))) matches = true;
+        }
+        if (!matches) continue;
+
         let score = 1;
-        if (nameLow.startsWith(q)) score = 3;
-        else if (nameLow.includes(` ${q}`) || nameLow.includes(`-${q}`)) score = 2;
+        if (p.priority || p.source === 'curated') score += 1000;
+        if (p.country && p.country.length > 1) score += 500;
+        if (p.role && p.role.length > 1) score += 100;
+
+        if (nameLow === q) score += 50;
+        else if (nameLow.startsWith(q)) score += 30;
+        else if (nameLow.includes(` ${q}`) || nameLow.includes(`-${q}`)) score += 20;
+
         scored.push({ score, player: p });
     }
     scored.sort((a, b) => b.score - a.score || a.player.name.localeCompare(b.player.name));
