@@ -127,7 +127,7 @@ async function scrapeCricbuzzMatches(url) {
                 'Connection': 'keep-alive',
                 'Cache-Control': 'no-cache'
             },
-            timeout: 15000
+            timeout: 6000
         });
         const $ = cheerio.load(data);
         const matches = [];
@@ -222,12 +222,14 @@ async function scrapeCricbuzzMatches(url) {
 app.get('/api/currentMatches', async (req, res) => {
     let matches = cache.get('liveMatches');
     if (!matches) {
-        const [live, recent, upcoming] = await Promise.all([
+        const results = await Promise.allSettled([
             scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores'),
             scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores/recent-matches'),
             scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores/upcoming-matches')
         ]);
-        matches = [...live, ...recent, ...upcoming];
+        matches = results
+            .filter(r => r.status === 'fulfilled' && Array.isArray(r.value))
+            .flatMap(r => r.value);
         const seen = new Set();
         matches = matches.filter(m => {
             if (seen.has(m.id)) return false;
