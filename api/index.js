@@ -49,9 +49,9 @@ function normalizeScrapedMatch(raw) {
         name: `${t1} vs ${t2}`,
         matchType: (raw.type || 'MATCH').toUpperCase(),
         statusText: raw.status || (raw.isLive ? 'Live' : 'Upcoming'),
-        isLive: raw.isLive,
-        isUpcoming: !raw.isLive && !raw.isCompleted,
-        isCompleted: raw.isCompleted,
+        isLive: !!raw.isLive && !raw.isCompleted,
+        isUpcoming: raw.isUpcoming != null ? !!raw.isUpcoming : (!raw.isLive && !raw.isCompleted),
+        isCompleted: !!raw.isCompleted,
         venue: raw.venue || '',
         dateGMT: raw.date || new Date().toISOString(),
         team1: { name: t1, logo: null, score: raw.score1 || '', overs: raw.overs1 || null },
@@ -159,10 +159,17 @@ async function scrapeCricbuzzMatches(url) {
                 // State/status
                 const stateEl = $(el).find('[class*="live"], [class*="status"], [class*="result"]').last();
                 const state = stateEl.text().trim() || $(el).children('span').last().text().trim();
-                const isLive = stateEl.hasClass('text-cbLive') || mUrl.includes('live-cricket-scores') || state.toLowerCase().includes('live');
                 const isCompleted = stateEl.hasClass('text-cbSuccess') ||
-                    (state.includes('won by') || state.includes('Stumps') || state.includes('rain') ||
-                     state.toLowerCase().includes('abandoned'));
+                    /\b(won by|match tied|tied|no result|abandoned|drawn)\b/i.test(state);
+                const isUpcoming = !isCompleted && (
+                    url.includes('upcoming-matches') ||
+                    /\b(starts at|match starts|yet to begin|preview|scheduled)\b/i.test(state)
+                );
+                const isLive = !isCompleted && !isUpcoming && (
+                    stateEl.hasClass('text-cbLive') ||
+                    url.endsWith('/live-scores') ||
+                    /\b(opt to|innings break|stumps|lunch|tea|rain|delay|need|trail|lead|live)\b/i.test(state)
+                );
 
                 // Find team rows — look for the container with two team rows
                 let teamRows = $(el).find('div').filter((_, d) => {
@@ -199,7 +206,7 @@ async function scrapeCricbuzzMatches(url) {
                 overs1 = String(overs1 || '').trim();
                 overs2 = String(overs2 || '').trim();
 
-                matches.push(normalizeScrapedMatch({ title, team1, team2, score1, score2, overs1, overs2, status: state, isLive, isCompleted, url: mUrl }));
+                matches.push(normalizeScrapedMatch({ title, team1, team2, score1, score2, overs1, overs2, status: state, isLive, isUpcoming, isCompleted, url: mUrl }));
             });
             
             if (matches.length > 0) { foundCards = true; break; }
@@ -290,9 +297,22 @@ app.get('/api/searchTeams', (req, res) => {
     const limit = Math.min(parseInt(req.query.limit) || 20, 10000); // 9999 allows fetching all
     if (!q) return res.json({ status: 'success', data: [] });
 
-    const results = q === '.' ? _teams : _teams.filter(t => 
-        t.name.toLowerCase().includes(q) || (t.country||'').toLowerCase().includes(q)
+    let results = q === '.' ? _teams.slice() : _teams.filter(t => 
+        t.name.toLowerCase().includes(q) || (t.country||'').toLowerCase().includes(q) || (t.type||'').toLowerCase().includes(q)
     );
+    if (q !== '.') {
+        const teamScore = t => {
+            let s = 0;
+            const ty = (t.type || '').toLowerCase();
+            const n = (t.name || '').toLowerCase();
+            if (ty.includes('international')) s += 1000;
+            else if (ty.includes('associate')) s += 500;
+            if (n === q) s += 200;
+            else if (n.startsWith(q)) s += 100;
+            return s;
+        };
+        results.sort((a, b) => teamScore(b) - teamScore(a) || a.name.localeCompare(b.name));
+    }
     res.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
     res.json({ status: 'success', data: results.slice(0, limit) });
 });
@@ -303,7 +323,10 @@ app.get('/api/searchTournaments', (req, res) => {
     if (!q) return res.json({ status: 'success', data: [] });
 
     const results = q === '.' ? _tournaments : _tournaments.filter(t => 
-        t.name.toLowerCase().includes(q) || (t.country||'').toLowerCase().includes(q)
+        t.name.toLowerCase().includes(q) ||
+        (t.country||'').toLowerCase().includes(q) ||
+        (t.aliases||'').toLowerCase().includes(q) ||
+        (t.type||'').toLowerCase().includes(q)
     );
     res.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
     res.json({ status: 'success', data: results.slice(0, limit) });
@@ -314,14 +337,16 @@ app.get('/api/searchMatches', async (req, res) => {
     const t2 = (req.query.team2 || '').toLowerCase();
     
     // We scrape live, recent, and upcoming matches since full historical search isn't available
-    let allMatches = cache.get('allMatches');
+    let allMatches = cache.get('allMatches') || cache.get('liveMatches');
     if (!allMatches) {
-        const [live, recent, upcoming] = await Promise.all([
+        const results = await Promise.allSettled([
             scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores'),
             scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores/recent-matches'),
             scrapeCricbuzzMatches('https://www.cricbuzz.com/cricket-match/live-scores/upcoming-matches')
         ]);
-        allMatches = [...live, ...recent, ...upcoming];
+        allMatches = results
+            .filter(r => r.status === 'fulfilled' && Array.isArray(r.value))
+            .flatMap(r => r.value);
         // deduplicate by id
         const seen = new Set();
         allMatches = allMatches.filter(m => {

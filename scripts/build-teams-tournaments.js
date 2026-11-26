@@ -29,6 +29,7 @@ LIMIT 3000
 // ── TOURNAMENTS ───────────────────────────────────────────────────────────
 const TOURN_SPARQL = `
 SELECT DISTINCT ?nameLabel ?countryLabel ?inceptionLabel WHERE {
+  ?t wdt:P641 wd:Q5375.
   {
     ?t wdt:P31/wdt:P279* wd:Q27020041.
   } UNION {
@@ -43,7 +44,7 @@ SELECT DISTINCT ?nameLabel ?countryLabel ?inceptionLabel WHERE {
   OPTIONAL { ?t wdt:P571 ?inception. BIND(YEAR(?inception) AS ?inceptionLabel) }
   SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
 }
-LIMIT 3000
+LIMIT 1500
 `;
 
 // Hard-coded comprehensive fallbacks (these will always be in the dataset
@@ -167,8 +168,8 @@ const FALLBACK_TEAMS = [
   ...['New South Wales','Victoria','Queensland','South Australia','Western Australia',
       'Tasmania','Australian Capital Territory'
     ].map(n => ({name: n, country:'Australia', gender:'men', type:'Sheffield Shield'})),
-  // Associate / ICC Members
-  ...['Afghanistan','Ireland','Scotland','Netherlands','UAE','Oman','Nepal','Papua New Guinea',
+  // Associate / ICC Members (excluding Full Members already listed above)
+  ...['Scotland','Netherlands','UAE','Oman','Nepal','Papua New Guinea',
       'Namibia','Uganda','Canada','USA','Hong Kong','Singapore','Kenya','Tanzania',
       'Malaysia','Botswana','Nigeria','Ghana'
     ].map(n => ({name: n, country: n, gender:'men', type:'Associate'})),
@@ -176,63 +177,67 @@ const FALLBACK_TEAMS = [
 
 const FALLBACK_TOURNAMENTS = [
   // ICC Men's
-  {name:'ICC Cricket World Cup', country:'International', type:'ICC', frequency:'4 years'},
-  {name:'ICC T20 World Cup', country:'International', type:'ICC', frequency:'2 years'},
-  {name:'ICC Champions Trophy', country:'International', type:'ICC', frequency:'4 years'},
-  {name:'ICC World Test Championship', country:'International', type:'ICC', frequency:'2 years'},
-  {name:'ICC Under-19 Cricket World Cup', country:'International', type:'ICC', frequency:'2 years'},
+  {name:'ICC Cricket World Cup', aliases:'CWC ODI World Cup', country:'International', gender:'men', type:'ICC', frequency:'4 years'},
+  {name:'ICC T20 World Cup', aliases:'WT20 T20WC', country:'International', gender:'men', type:'ICC', frequency:'2 years'},
+  {name:'ICC Champions Trophy', aliases:'CT Mini World Cup', country:'International', gender:'men', type:'ICC', frequency:'4 years'},
+  {name:'ICC World Test Championship', aliases:'WTC', country:'International', gender:'men', type:'ICC', frequency:'2 years'},
+  {name:'ICC Under-19 Cricket World Cup', aliases:'U19 World Cup', country:'International', gender:'men', type:'ICC', frequency:'2 years'},
   // ICC Women's
-  {name:'ICC Women\'s Cricket World Cup', country:'International', type:'ICC', frequency:'4 years'},
-  {name:'ICC Women\'s T20 World Cup', country:'International', type:'ICC', frequency:'2 years'},
-  {name:'ICC Women\'s Championship', country:'International', type:'ICC', frequency:'ongoing'},
+  {name:'ICC Women\'s Cricket World Cup', aliases:'WWC Women ODI World Cup', country:'International', gender:'women', type:'ICC', frequency:'4 years'},
+  {name:'ICC Women\'s T20 World Cup', aliases:'WT20WC Women T20WC', country:'International', gender:'women', type:'ICC', frequency:'2 years'},
+  {name:'ICC Women\'s Championship', aliases:'IWC', country:'International', gender:'women', type:'ICC', frequency:'ongoing'},
   // Indian
-  {name:'Indian Premier League', country:'India', type:'T20 League', frequency:'Annual'},
-  {name:'Women\'s Premier League', country:'India', type:'T20 League', frequency:'Annual'},
-  {name:'Ranji Trophy', country:'India', type:'Domestic', frequency:'Annual'},
-  {name:'Vijay Hazare Trophy', country:'India', type:'Domestic', frequency:'Annual'},
-  {name:'Syed Mushtaq Ali Trophy', country:'India', type:'Domestic', frequency:'Annual'},
-  {name:'Duleep Trophy', country:'India', type:'Domestic', frequency:'Annual'},
-  {name:'Irani Cup', country:'India', type:'Domestic', frequency:'Annual'},
-  {name:'Deodhar Trophy', country:'India', type:'Domestic', frequency:'Annual'},
-  {name:'India A tours', country:'India', type:'A-team', frequency:'Annual'},
+  {name:'Indian Premier League', aliases:'IPL Tata IPL', country:'India', gender:'men', type:'T20 League', frequency:'Annual'},
+  {name:'Women\'s Premier League', aliases:'WPL WIPL', country:'India', gender:'women', type:'T20 League', frequency:'Annual'},
+  {name:'Ranji Trophy', aliases:'Ranji', country:'India', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'Vijay Hazare Trophy', aliases:'VHT', country:'India', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'Syed Mushtaq Ali Trophy', aliases:'SMAT', country:'India', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'Duleep Trophy', country:'India', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'Irani Cup', country:'India', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'Deodhar Trophy', country:'India', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'India A tours', country:'India', gender:'men', type:'A-team', frequency:'Annual'},
   // Australian
-  {name:'Big Bash League', country:'Australia', type:'T20 League', frequency:'Annual'},
-  {name:'Women\'s Big Bash League', country:'Australia', type:'T20 League', frequency:'Annual'},
-  {name:'Sheffield Shield', country:'Australia', type:'Domestic', frequency:'Annual'},
-  {name:'Marsh Cup', country:'Australia', type:'Domestic', frequency:'Annual'},
+  {name:'Big Bash League', aliases:'BBL', country:'Australia', gender:'men', type:'T20 League', frequency:'Annual'},
+  {name:'Women\'s Big Bash League', aliases:'WBBL', country:'Australia', gender:'women', type:'T20 League', frequency:'Annual'},
+  {name:'Sheffield Shield', country:'Australia', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'Marsh Cup', country:'Australia', gender:'men', type:'Domestic', frequency:'Annual'},
   // English
-  {name:'The Hundred', country:'England', type:'T20 League', frequency:'Annual'},
-  {name:'T20 Blast', country:'England', type:'T20 League', frequency:'Annual'},
-  {name:'County Championship', country:'England', type:'Domestic', frequency:'Annual'},
-  {name:'One-Day Cup', country:'England', type:'Domestic', frequency:'Annual'},
-  {name:'Royal London One-Day Cup', country:'England', type:'Domestic', frequency:'Annual'},
+  {name:'The Hundred', aliases:'100', country:'England', gender:'men', type:'T20 League', frequency:'Annual'},
+  {name:'The Hundred Women', aliases:'100 Women', country:'England', gender:'women', type:'T20 League', frequency:'Annual'},
+  {name:'T20 Blast', aliases:'Vitality Blast', country:'England', gender:'men', type:'T20 League', frequency:'Annual'},
+  {name:'County Championship', country:'England', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'One-Day Cup', country:'England', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'Royal London One-Day Cup', country:'England', gender:'men', type:'Domestic', frequency:'Annual'},
   // Pakistan
-  {name:'Pakistan Super League', country:'Pakistan', type:'T20 League', frequency:'Annual'},
-  {name:'Quaid-e-Azam Trophy', country:'Pakistan', type:'Domestic', frequency:'Annual'},
+  {name:'Pakistan Super League', aliases:'PSL HBL PSL', country:'Pakistan', gender:'men', type:'T20 League', frequency:'Annual'},
+  {name:'Quaid-e-Azam Trophy', country:'Pakistan', gender:'men', type:'Domestic', frequency:'Annual'},
   // South Africa
-  {name:'SA20', country:'South Africa', type:'T20 League', frequency:'Annual'},
-  {name:'CSA T20 Challenge', country:'South Africa', type:'Domestic', frequency:'Annual'},
-  {name:'CSA 4-Day Domestic Series', country:'South Africa', type:'Domestic', frequency:'Annual'},
+  {name:'SA20', aliases:'CSA T20 League', country:'South Africa', gender:'men', type:'T20 League', frequency:'Annual'},
+  {name:'CSA T20 Challenge', country:'South Africa', gender:'men', type:'Domestic', frequency:'Annual'},
+  {name:'CSA 4-Day Domestic Series', country:'South Africa', gender:'men', type:'Domestic', frequency:'Annual'},
   // West Indies
-  {name:'Caribbean Premier League', country:'West Indies', type:'T20 League', frequency:'Annual'},
+  {name:'Caribbean Premier League', aliases:'CPL', country:'West Indies', gender:'men', type:'T20 League', frequency:'Annual'},
+  {name:'Women\'s Caribbean Premier League', aliases:'WCPL', country:'West Indies', gender:'women', type:'T20 League', frequency:'Annual'},
   // Sri Lanka
-  {name:'Lanka Premier League', country:'Sri Lanka', type:'T20 League', frequency:'Annual'},
+  {name:'Lanka Premier League', aliases:'LPL', country:'Sri Lanka', gender:'men', type:'T20 League', frequency:'Annual'},
   // Bangladesh
-  {name:'Bangladesh Premier League', country:'Bangladesh', type:'T20 League', frequency:'Annual'},
-  {name:'Dhaka Premier League', country:'Bangladesh', type:'Domestic', frequency:'Annual'},
+  {name:'Bangladesh Premier League', aliases:'BPL', country:'Bangladesh', gender:'men', type:'T20 League', frequency:'Annual'},
+  {name:'Dhaka Premier League', aliases:'DPL', country:'Bangladesh', gender:'men', type:'Domestic', frequency:'Annual'},
   // UAE
-  {name:'International League T20', country:'UAE', type:'T20 League', frequency:'Annual'},
+  {name:'International League T20', aliases:'ILT20', country:'UAE', gender:'men', type:'T20 League', frequency:'Annual'},
   // USA
-  {name:'Major League Cricket', country:'USA', type:'T20 League', frequency:'Annual'},
+  {name:'Major League Cricket', aliases:'MLC', country:'USA', gender:'men', type:'T20 League', frequency:'Annual'},
   // Asia Cup
-  {name:'Asia Cup', country:'Asia', type:'Regional', frequency:'2 years'},
-  {name:'Asia Cup Women', country:'Asia', type:'Regional', frequency:'2 years'},
-  // Historical
-  {name:'Benson & Hedges World Series', country:'Australia', type:'Historical', frequency:''},
-  {name:'Hero Cup', country:'India', type:'Historical', frequency:''},
-  {name:'Sharjah Cup', country:'UAE', type:'Historical', frequency:''},
-  {name:'Austral-Asia Cup', country:'International', type:'Historical', frequency:''},
-  {name:'Champions League T20', country:'International', type:'Historical', frequency:''},
+  {name:'Asia Cup', aliases:'ACC Asia Cup', country:'Asia', gender:'men', type:'Regional', frequency:'2 years'},
+  {name:'Asia Cup Women', aliases:'Women\'s Asia Cup', country:'Asia', gender:'women', type:'Regional', frequency:'2 years'},
+  // Iconic bilateral / historical
+  {name:'The Ashes', aliases:'Ashes', country:'International', gender:'men', type:'Test Series', frequency:'2 years'},
+  {name:'Border-Gavaskar Trophy', aliases:'BGT', country:'International', gender:'men', type:'Test Series', frequency:'2 years'},
+  {name:'Benson & Hedges World Series', country:'Australia', gender:'men', type:'Historical', frequency:''},
+  {name:'Hero Cup', country:'India', gender:'men', type:'Historical', frequency:''},
+  {name:'Sharjah Cup', country:'UAE', gender:'men', type:'Historical', frequency:''},
+  {name:'Austral-Asia Cup', country:'International', gender:'men', type:'Historical', frequency:''},
+  {name:'Champions League T20', aliases:'CLT20', country:'International', gender:'men', type:'Historical', frequency:''},
 ];
 
 async function sparqlQuery(query, label) {
@@ -285,13 +290,17 @@ async function buildTeams() {
 async function buildTournaments() {
   const rows = await sparqlQuery(TOURN_SPARQL, 'cricket tournaments');
   const wikiTourneys = rows
-    .map(b => ({
-      name: b.nameLabel?.value || '',
-      country: b.countryLabel?.value || '',
-      type: 'Tournament',
-      frequency: '',
-      inception: b.inceptionLabel?.value || ''
-    }))
+    .map(b => {
+      const name = b.nameLabel?.value || '';
+      return {
+        name,
+        country: b.countryLabel?.value || '',
+        gender: /\bwomen'?s?\b/i.test(name) ? 'women' : 'men',
+        type: 'Tournament',
+        frequency: '',
+        inception: b.inceptionLabel?.value || ''
+      };
+    })
     .filter(t => t.name && t.name.length > 2 && t.name.length < 100);
 
   const all = dedup([...FALLBACK_TOURNAMENTS, ...wikiTourneys], t => t.name);
