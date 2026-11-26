@@ -238,6 +238,9 @@ app.get('/api/currentMatches', async (req, res) => {
         });
         if (matches.length > 0) cache.set('liveMatches', matches);
     }
+    if (matches && matches.length > 0) {
+        res.set('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=300');
+    }
     res.json({ status: 'success', data: matches });
 });
 
@@ -278,6 +281,7 @@ app.get('/api/searchPlayers', (req, res) => {
         scored.push({ score, player: p });
     }
     scored.sort((a, b) => b.score - a.score || a.player.name.localeCompare(b.player.name));
+    res.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
     res.json({ status: 'success', data: scored.slice(0, limit).map(x => x.player), total: scored.length });
 });
 
@@ -289,6 +293,7 @@ app.get('/api/searchTeams', (req, res) => {
     const results = q === '.' ? _teams : _teams.filter(t => 
         t.name.toLowerCase().includes(q) || (t.country||'').toLowerCase().includes(q)
     );
+    res.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
     res.json({ status: 'success', data: results.slice(0, limit) });
 });
 
@@ -300,6 +305,7 @@ app.get('/api/searchTournaments', (req, res) => {
     const results = q === '.' ? _tournaments : _tournaments.filter(t => 
         t.name.toLowerCase().includes(q) || (t.country||'').toLowerCase().includes(q)
     );
+    res.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
     res.json({ status: 'success', data: results.slice(0, limit) });
 });
 
@@ -334,6 +340,7 @@ app.get('/api/searchMatches', async (req, res) => {
         return true;
     });
 
+    res.set('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=300');
     res.json({ status: 'success', data: results });
 });
 
